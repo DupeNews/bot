@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  prometheus-api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - API_PORT=3000
+    volumes:
+      - ./lua:/usr/src/app/lua
+      - ./bin:/usr/src/app/bin
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Discord bot service
+  prometheus-discord:
+    build: .
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+    command: ["npm", "start"]
+    volumes:
+      - ./lua:/usr/src/app/lua
+      - ./bin:/usr/src/app/bin
+    restart: unless-stopped
+    profiles:
+      - discord  # Only start when explicitly requested
