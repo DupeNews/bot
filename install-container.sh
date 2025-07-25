@@ -125,12 +125,43 @@ clone_repository() {
     fi
 }
 
+# Function to fix esbuild configuration
+fix_esbuild_config() {
+    if [ -f "esbuild.js" ]; then
+        print_status "Updating esbuild.js for Node.js platform..."
+
+        # Create a backup
+        cp esbuild.js esbuild.js.backup
+
+        # Fix the esbuild configuration
+        cat > esbuild.js << 'EOF'
+const esbuild = require('esbuild');
+
+esbuild.build({
+  entryPoints: ['src/index.ts'],
+  bundle: true,
+  platform: 'node',
+  target: 'node16',
+  outfile: 'index.js',
+  external: ['fs', 'path', 'crypto', 'os', 'util', 'events', 'stream', 'buffer'],
+  format: 'cjs',
+  sourcemap: false,
+  minify: false,
+}).catch(() => process.exit(1));
+EOF
+
+        print_success "esbuild.js updated for Node.js platform"
+    else
+        print_warning "esbuild.js not found, skipping configuration fix"
+    fi
+}
+
 # Function to install dependencies
 install_dependencies() {
     print_header "Installing Project Dependencies"
-    
+
     cd "$PROJECT_DIR/$API_DIR"
-    
+
     if [ ! -f "package.json" ]; then
         print_error "package.json not found in $API_DIR"
         exit 1
@@ -138,42 +169,68 @@ install_dependencies() {
 
     print_status "Installing npm dependencies..."
     npm install
-    
-    print_status "Building the project..."
-    npm run build
-    
-    print_success "Dependencies installed and project built successfully"
+
+    print_status "Installing TypeScript runtime dependencies..."
+    npm install ts-node typescript @types/node
+
+    print_status "Fixing esbuild configuration for Node.js..."
+    fix_esbuild_config
+
+    print_status "Attempting to build the project..."
+    if npm run build 2>/dev/null; then
+        print_success "Project built successfully"
+        BUILD_SUCCESS=true
+    else
+        print_warning "Build failed, will use TypeScript runtime instead"
+        BUILD_SUCCESS=false
+    fi
+
+    print_success "Dependencies installed successfully"
     cd - > /dev/null
 }
 
 # Function to start services (container-friendly)
 start_services() {
     print_header "Starting Services"
-    
+
     cd "$PROJECT_DIR/$API_DIR"
-    
+
+    # Determine which start command to use
+    if [ "$BUILD_SUCCESS" = true ] && [ -f "index.js" ]; then
+        START_CMD="node index.js"
+        print_status "Using compiled JavaScript version"
+    elif [ -f "src/index.ts" ]; then
+        START_CMD="npx ts-node src/index.ts"
+        print_status "Using TypeScript runtime version"
+    else
+        print_error "No valid entry point found!"
+        exit 1
+    fi
+
     if command -v pm2 &> /dev/null || [ -f "$HOME/.local/bin/pm2" ]; then
         print_status "Starting API with PM2..."
-        
+
         # Use full path if needed
         PM2_CMD="pm2"
         if [ -f "$HOME/.local/bin/pm2" ]; then
             PM2_CMD="$HOME/.local/bin/pm2"
         fi
-        
-        $PM2_CMD start npm --name "prometheus-api" -- run start:api
+
+        # Start with the appropriate command
+        $PM2_CMD start "$START_CMD" --name "prometheus-api"
         $PM2_CMD save
-        
+
         print_success "API started with PM2"
     else
         print_status "Starting API in background..."
-        nohup npm run start:api > api.log 2>&1 &
+        nohup $START_CMD > api.log 2>&1 &
         API_PID=$!
         echo $API_PID > api.pid
         print_success "API started in background (PID: $API_PID)"
         print_status "Logs are being written to api.log"
+        print_status "Start command: $START_CMD"
     fi
-    
+
     cd - > /dev/null
 }
 
@@ -228,7 +285,11 @@ display_final_info() {
     else
         echo -e "  â€¢ View Logs: tail -f $PROJECT_DIR/$API_DIR/api.log"
         echo -e "  â€¢ Stop API: kill \$(cat $PROJECT_DIR/$API_DIR/api.pid)"
-        echo -e "  â€¢ Start API: cd $PROJECT_DIR/$API_DIR && npm run start:api"
+        if [ "$BUILD_SUCCESS" = true ] && [ -f "$PROJECT_DIR/$API_DIR/index.js" ]; then
+            echo -e "  â€¢ Start API: cd $PROJECT_DIR/$API_DIR && node index.js"
+        else
+            echo -e "  â€¢ Start API: cd $PROJECT_DIR/$API_DIR && npx ts-node src/index.ts"
+        fi
     fi
     echo ""
     echo -e "${CYAN}âš™ï¸ Configuration:${NC}"
